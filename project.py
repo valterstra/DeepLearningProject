@@ -104,34 +104,42 @@ class ConvNetVGG1Block(nn.Module):
 
 
 class ConvNetVGG3Blocks(nn.Module):
-    """patchify + 3 VGG-style blocks (no final pool) → FC → FC"""
-    def __init__(self, f=2, nf=64, nh=128, channels=3, num_classes=10):
+    """Patchify + 3 VGG-style blocks (no final pool) → FC → FC, optional Dropout"""
+    def __init__(self, f=2, nf=64, nh=128, channels=3, num_classes=10, use_dropout=False, p_drop=0.5):
         super().__init__()
+        self.use_dropout = use_dropout
 
         self.patch_conv = nn.Conv2d(channels, nf, kernel_size=f, stride=f)
+        if self.use_dropout:
+            self.dropout0 = nn.Dropout(p=p_drop)
 
         self.block1 = nn.Sequential(
-            nn.Conv2d(nf, nf, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(nf, nf, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
+            nn.Conv2d(nf, nf, kernel_size=3, padding=1), nn.ReLU(inplace=True),
+            nn.Conv2d(nf, nf, kernel_size=3, padding=1), nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=2)
         )
+        if self.use_dropout:
+            self.dropout1 = nn.Dropout(p=p_drop)
+
         self.block2 = nn.Sequential(
-            nn.Conv2d(nf, nf * 2, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(nf * 2, nf * 2, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
+            nn.Conv2d(nf, nf * 2, kernel_size=3, padding=1), nn.ReLU(inplace=True),
+            nn.Conv2d(nf * 2, nf * 2, kernel_size=3, padding=1), nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=2)
         )
+        if self.use_dropout:
+            self.dropout2 = nn.Dropout(p=p_drop)
+
         self.block3 = nn.Sequential(
-            nn.Conv2d(nf * 2, nf * 4, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(nf * 4, nf * 4, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True)
+            nn.Conv2d(nf * 2, nf * 4, kernel_size=3, padding=1), nn.ReLU(inplace=True),
+            nn.Conv2d(nf * 4, nf * 4, kernel_size=3, padding=1), nn.ReLU(inplace=True)
         )
+
+        if self.use_dropout:
+            self.dropout3 = nn.Dropout(p=p_drop)
         side = (32 // f) // 4
         self.fc1 = nn.Linear(nf * 4 * side * side, nh)
+        if self.use_dropout:
+            self.dropout4 = nn.Dropout(p=p_drop)
         self.fc2 = nn.Linear(nh, num_classes)
 
         for module in self.modules():
@@ -142,11 +150,21 @@ class ConvNetVGG3Blocks(nn.Module):
 
     def forward(self, x):
         x = F.relu(self.patch_conv(x))
+        if self.use_dropout:
+            x = self.dropout0(x)
         x = self.block1(x)
+        if self.use_dropout:
+            x = self.dropout1(x)
         x = self.block2(x)
+        if self.use_dropout:
+            x = self.dropout2(x)
         x = self.block3(x)
+        if self.use_dropout:
+            x = self.dropout3(x)
         x = x.flatten(start_dim=1)
         x = F.relu(self.fc1(x))
+        if self.use_dropout:
+            x = self.dropout4(x)
         x = self.fc2(x)
         return x
 
@@ -210,9 +228,11 @@ def main():
 
     # architecture selection: 0=baseline, 1=1-block, 3=3-blocks
     arch = 3  # set to 0, 1, or 3
+    use_dropout = True  # added boolean for dropout
+    p_drop = 0.3
 
     batch_size = 100
-    n_epochs = 1
+    n_epochs = 80
 
     if arch == 0:
         f, nf, nh = 4, 3, 50
@@ -230,7 +250,7 @@ def main():
         model = ConvNetVGG1Block(f=f, nf=nf, nh=nh).to(device)
         optimizer = optim.AdamW(model.parameters(), lr=lr)
     else:
-        model = ConvNetVGG3Blocks(f=f, nf=nf, nh=nh).to(device)
+        model = ConvNetVGG3Blocks(f=f, nf=nf, nh=nh, use_dropout=use_dropout, p_drop=p_drop).to(device)
         optimizer = optim.AdamW(model.parameters(), lr=lr)
 
     criterion = nn.CrossEntropyLoss()
