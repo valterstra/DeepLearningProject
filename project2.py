@@ -11,6 +11,7 @@ from keras.layers import Flatten
 from keras.layers import Dropout
 from keras.optimizers import SGD
 from keras.optimizers import AdamW
+from keras.regularizers import l2
 from sklearn.model_selection import train_test_split
 
 
@@ -36,65 +37,66 @@ def prep_pixels(train, test):
     return train_norm, test_norm
 
 
-def define_model_no_vgg():
+def define_model_no_vgg(weight_decay=1e-4, lr=1e-4):
+
     model = Sequential()
     model.add(Conv2D(64, (2, 2), strides=(2, 2), activation='relu',
-                     kernel_initializer='he_uniform', input_shape=(32, 32, 3)))
+                     kernel_initializer='he_uniform',kernel_regularizer=l2(weight_decay), input_shape=(32, 32, 3)))
     model.add(Flatten())
-    model.add(Dense(128, activation='relu', kernel_initializer='he_uniform'))
+    model.add(Dense(128, activation='relu', kernel_initializer='he_uniform', kernel_regularizer=l2(weight_decay)))
     model.add(Dense(10, activation='softmax'))
-    opt = AdamW(learning_rate=1e-4)
+    opt = AdamW(learning_rate=lr, weight_decay=weight_decay)
     model.compile(optimizer=opt, loss='categorical_crossentropy', metrics=['accuracy'])
     return model
 
 
-def define_model_one_vgg():
+def define_model_one_vgg(weight_decay=1e-4, lr=1e-4):
     model = Sequential()
     model.add(Conv2D(64, (2, 2), strides=(2, 2), activation='relu',
-                     kernel_initializer='he_uniform', input_shape=(32, 32, 3)))
-    model.add(Conv2D(64, (3, 3), padding='same', activation='relu', kernel_initializer='he_uniform'))
-    model.add(Conv2D(64, (3, 3), padding='same', activation='relu', kernel_initializer='he_uniform'))
+                     kernel_initializer='he_uniform', kernel_regularizer=l2(weight_decay), input_shape=(32, 32, 3)))
+    model.add(Conv2D(64, (3, 3), padding='same', activation='relu', kernel_initializer='he_uniform', kernel_regularizer=l2(weight_decay)))
+    model.add(Conv2D(64, (3, 3), padding='same', activation='relu', kernel_initializer='he_uniform', kernel_regularizer=l2(weight_decay)))
     model.add(MaxPooling2D(pool_size=(2, 2)))
     model.add(Flatten())
-    model.add(Dense(128, activation='relu', kernel_initializer='he_uniform'))
+    model.add(Dense(128, activation='relu', kernel_initializer='he_uniform', kernel_regularizer=l2(weight_decay)))
     model.add(Dense(10, activation='softmax'))
-    opt = AdamW(learning_rate=1e-4)
+    opt = AdamW(learning_rate=lr, weight_decay=weight_decay)
     model.compile(optimizer=opt, loss='categorical_crossentropy', metrics=['accuracy'])
     return model
 
 
-def define_model_three_vgg(drop_rate=0.2):
+def define_model_three_vgg(drop_rate=0.2, weight_decay=1e-4, lr=1e-4):
     model = Sequential()
 
     model.add(Conv2D(64, (2, 2), strides=(1, 1), activation='relu',
-                     kernel_initializer='he_uniform', input_shape=(32, 32, 3)))
+                     kernel_initializer='he_uniform', kernel_regularizer=l2(weight_decay),  input_shape=(32, 32, 3)))
     if drop_rate > 0:
         model.add(Dropout(drop_rate))
 
-    model.add(Conv2D(64, (3, 3), padding='same', activation='relu', kernel_initializer='he_uniform'))
-    model.add(Conv2D(64, (3, 3), padding='same', activation='relu', kernel_initializer='he_uniform'))
+    model.add(Conv2D(64, (3, 3), padding='same', activation='relu', kernel_initializer='he_uniform', kernel_regularizer=l2(weight_decay)))
+    model.add(Conv2D(64, (3, 3), padding='same', activation='relu', kernel_initializer='he_uniform', kernel_regularizer=l2(weight_decay)))
     model.add(MaxPooling2D(pool_size=(2, 2)))
     if drop_rate > 0:
         model.add(Dropout(drop_rate))
 
-    model.add(Conv2D(128, (3, 3), padding='same', activation='relu', kernel_initializer='he_uniform'))
-    model.add(Conv2D(128, (3, 3), padding='same', activation='relu', kernel_initializer='he_uniform'))
+    model.add(Conv2D(128, (3, 3), padding='same', activation='relu', kernel_initializer='he_uniform', kernel_regularizer=l2(weight_decay)))
+    model.add(Conv2D(128, (3, 3), padding='same', activation='relu', kernel_initializer='he_uniform', kernel_regularizer=l2(weight_decay)))
     model.add(MaxPooling2D(pool_size=(2, 2)))
     if drop_rate > 0:
         model.add(Dropout(drop_rate))
 
-    model.add(Conv2D(256, (3, 3), padding='same', activation='relu', kernel_initializer='he_uniform'))
-    model.add(Conv2D(256, (3, 3), padding='same', activation='relu', kernel_initializer='he_uniform'))
+    model.add(Conv2D(256, (3, 3), padding='same', activation='relu', kernel_initializer='he_uniform', kernel_regularizer=l2(weight_decay)))
+    model.add(Conv2D(256, (3, 3), padding='same', activation='relu', kernel_initializer='he_uniform', kernel_regularizer=l2(weight_decay)))
     if drop_rate > 0:
         model.add(Dropout(drop_rate))
 
     model.add(Flatten())
-    model.add(Dense(128, activation='relu', kernel_initializer='he_uniform'))
+    model.add(Dense(128, activation='relu', kernel_initializer='he_uniform', kernel_regularizer=l2(weight_decay)))
     if drop_rate > 0:
         model.add(Dropout(drop_rate))
     model.add(Dense(10, activation='softmax'))
 
-    opt = AdamW(learning_rate=1e-4)
+    opt = AdamW(learning_rate=lr, weight_decay=weight_decay)
     model.compile(optimizer=opt, loss='categorical_crossentropy', metrics=['accuracy'])
 
     return model
