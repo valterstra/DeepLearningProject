@@ -118,6 +118,20 @@ class CIFAR10Model(nn.Module):
         x = self.fc2(x)
         return x
 
+def LabelSmoothingCrossEntropy(nn.Module):
+    def __init__(self, smoothing=0.1):
+        super().__init__()
+        self.smoothing = smoothing
+        self.confidence = 1.0 - smoothing
+
+    def forward(self, x, target):
+        log_probs = nn.functional.log_softmax(x, dim=-1)
+        true_dist = torch.zeros_like(log_probs)
+        true_dist.fill_(self.smoothing / (x.size(1) - 1))
+        true_dist.scatter_(1, target.unsqueeze(1), self.confidence)
+        return torch.mean(torch.sum(-true_dist * log_probs, dim=-1))
+
+
 
 def train_one_epoch(model, dataloader, optimizer, criterion, device):
     model.train()
@@ -180,6 +194,7 @@ def main():
     use_random_crop = False #this is the translation agumentation that they are talking about
     use_random_flip = False
     use_normalization = False
+    use_label_smoothing = True
 
     use_dropout = True
     dropout_rate = 0.3
@@ -232,7 +247,10 @@ def main():
     else:
         scheduler = None
 
-    criterion = nn.CrossEntropyLoss()
+    if use_label_smoothing:
+        criterion = LabelSmoothingCrossEntropy(smoothing=0.1)
+    else:
+        criterion = nn.CrossEntropyLoss()
 
     train_acc, val_acc = [], []
     train_loss, val_loss = [], []
