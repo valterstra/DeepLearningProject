@@ -54,7 +54,7 @@ def load_data(batch_size=64, val_size=1000, use_random_crop=False, use_random_fl
 
 
 class CIFAR10Model(nn.Module):
-    def __init__(self, use_dropout=True, dropout_rate=0.2, use_batchnorm=False, use_stride_downsampling=False):
+    def __init__(self, use_dropout=True, dropout_rate=0.2, use_batchnorm=False, use_stride_downsampling=False, use_gap=False):
         super().__init__()
         self.relu = nn.ReLU()
         self.use_dropout = use_dropout
@@ -82,16 +82,27 @@ class CIFAR10Model(nn.Module):
         self.bn3_2 = nn.BatchNorm2d(256) if use_batchnorm else nn.Identity()
         self.pool3 = nn.Identity() if use_stride_downsampling else nn.MaxPool2d(2, 2)
 
-        self.flatten = nn.Flatten()
-        self.fc1 = nn.Linear(256 * 4 * 4, 128)
-        self.fc2 = nn.Linear(128, 10)
+        self.use_gap = use_gap
+        if self.use_gap:
+            self.global_avg_pool = nn.AdaptiveAvgPool2d((1, 1))
+            self.classifier = nn.Linear(256, 10)
+        else:
+            self.flatten = nn.Flatten()
+            self.fc1 = nn.Linear(256 * 4 * 4, 128)
+            self.fc2 = nn.Linear(128, 10)
 
-        for layer in [
+        layers_to_init = [
             self.conv1_1, self.conv1_2,
             self.conv2_1, self.conv2_2,
             self.conv3_1, self.conv3_2,
-            self.fc1, self.fc2
-        ]:
+        ]
+
+        if self.use_gap:
+            layers_to_init.append(self.classifier)
+        else:
+            layers_to_init.extend([self.fc1, self.fc2])
+
+        for layer in layers_to_init:
             if isinstance(layer, nn.Conv2d) or isinstance(layer, nn.Linear):
                 nn.init.kaiming_uniform_(layer.weight, nonlinearity='relu' if layer != self.fc2 else 'linear')
                 nn.init.zeros_(layer.bias)
@@ -112,13 +123,18 @@ class CIFAR10Model(nn.Module):
         x = self.pool3(x)
         x = self.dropout(x)
 
-        x = self.flatten(x)
-        x = self.relu(self.fc1(x))
-        x = self.dropout(x)
-        x = self.fc2(x)
+        if self.use_gap:
+            x = self.global_avg_pool(x)
+            x = torch.flatten(x, 1)
+            x = self.classifier(x)
+        else:
+            x = self.flatten(x)
+            x = self.relu(self.fc1(x))
+            x = self.dropout(x)
+            x = self.fc2(x)
         return x
 
-def LabelSmoothingCrossEntropy(nn.Module):
+class LabelSmoothingCrossEntropy(nn.Module):
     def __init__(self, smoothing=0.1):
         super().__init__()
         self.smoothing = smoothing
@@ -130,8 +146,6 @@ def LabelSmoothingCrossEntropy(nn.Module):
         true_dist.fill_(self.smoothing / (x.size(1) - 1))
         true_dist.scatter_(1, target.unsqueeze(1), self.confidence)
         return torch.mean(torch.sum(-true_dist * log_probs, dim=-1))
-
-
 
 def train_one_epoch(model, dataloader, optimizer, criterion, device):
     model.train()
@@ -195,6 +209,7 @@ def main():
     use_random_flip = False
     use_normalization = False
     use_label_smoothing = True
+    use_gap = True
 
     use_dropout = True
     dropout_rate = 0.3
@@ -220,7 +235,8 @@ def main():
         use_dropout=use_dropout,
         dropout_rate=dropout_rate,
         use_batchnorm=use_batchnorm,
-        use_stride_downsampling=use_stride_downsampling
+        use_stride_downsampling=use_stride_downsampling,
+        use_gap=use_gap
     ).to(device)
 
     optimizer = optim.AdamW(
