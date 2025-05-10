@@ -1,16 +1,18 @@
 # test harness for evaluating models on the cifar10 dataset
 import sys
 import matplotlib.pyplot as plt
-from keras.datasets import cifar10
-from keras.utils import to_categorical
-from keras.models import Sequential
-from keras.layers import Conv2D
-from keras.layers import MaxPooling2D
-from keras.layers import Dense
-from keras.layers import Flatten
-from keras.layers import Dropout
-from keras.optimizers import SGD
-from keras.optimizers import AdamW
+from tensorflow.keras.datasets import cifar10
+from tensorflow.keras.layers import RandomFlip
+from tensorflow.keras.layers import RandomTranslation
+from tensorflow.keras.utils import to_categorical
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Conv2D
+from tensorflow.keras.layers import MaxPooling2D
+from tensorflow.keras.layers import Dense
+from tensorflow.keras.layers import Flatten
+from tensorflow.keras.layers import Dropout
+from tensorflow.keras.optimizers import SGD
+from tensorflow.keras.optimizers import AdamW
 from sklearn.model_selection import train_test_split
 
 
@@ -100,6 +102,48 @@ def define_model_three_vgg(drop_rate=0.2):
     return model
 
 
+def define_data_augmented_model(drop_rate=0.2):
+    model = Sequential()
+    
+    # Added data augmentation
+    # These do not add data but when processing the batches there is a chance the Flip or Translation is applied
+    model.add(RandomFlip(mode="horizontal_and_vertical"))
+    model.add(RandomTranslation(0.2, 0.2))
+
+    model.add(Conv2D(64, (2, 2), strides=(1, 1), activation='relu',
+                     kernel_initializer='he_uniform', input_shape=(32, 32, 3)))
+    if drop_rate > 0:
+        model.add(Dropout(drop_rate))
+
+    model.add(Conv2D(64, (3, 3), padding='same', activation='relu', kernel_initializer='he_uniform'))
+    model.add(Conv2D(64, (3, 3), padding='same', activation='relu', kernel_initializer='he_uniform'))
+    model.add(MaxPooling2D(pool_size=(2, 2)))
+    if drop_rate > 0:
+        model.add(Dropout(drop_rate))
+
+    model.add(Conv2D(128, (3, 3), padding='same', activation='relu', kernel_initializer='he_uniform'))
+    model.add(Conv2D(128, (3, 3), padding='same', activation='relu', kernel_initializer='he_uniform'))
+    model.add(MaxPooling2D(pool_size=(2, 2)))
+    if drop_rate > 0:
+        model.add(Dropout(drop_rate))
+
+    model.add(Conv2D(256, (3, 3), padding='same', activation='relu', kernel_initializer='he_uniform'))
+    model.add(Conv2D(256, (3, 3), padding='same', activation='relu', kernel_initializer='he_uniform'))
+    if drop_rate > 0:
+        model.add(Dropout(drop_rate))
+
+    model.add(Flatten())
+    model.add(Dense(128, activation='relu', kernel_initializer='he_uniform'))
+    if drop_rate > 0:
+        model.add(Dropout(drop_rate))
+    model.add(Dense(10, activation='softmax'))
+
+    opt = AdamW(learning_rate=1e-4)
+    model.compile(optimizer=opt, loss='categorical_crossentropy', metrics=['accuracy'])
+
+    return model
+
+
 def summarize_diagnostics(history):
     n_epochs = len(history.history['loss'])
     epochs = range(1, n_epochs + 1)
@@ -133,7 +177,7 @@ def main():
 
     epochs = 100
     drop_rate = 0.2
-    model_choice = 3
+    model_choice = 4
 
     if model_choice == 1:
         model = define_model_no_vgg()
@@ -141,6 +185,8 @@ def main():
         model = define_model_one_vgg()
     elif model_choice == 3:
         model = define_model_three_vgg(drop_rate=drop_rate)
+    elif model_choice == 4:
+        model = define_data_augmented_model(drop_rate=drop_rate)
 
     history = model.fit(trainX, trainY, epochs=epochs, batch_size=64,
                         validation_data=(valX, valY), verbose=1)
