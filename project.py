@@ -53,25 +53,31 @@ def load_data(batch_size=64, val_size=1000, use_random_crop=False, use_random_fl
 
 
 class CIFAR10Model(nn.Module):
-    def __init__(self, use_dropout=True, dropout_rate=0.2):
+    def __init__(self, use_dropout=True, dropout_rate=0.2, use_batchnorm=False):
         super().__init__()
         self.relu = nn.ReLU()
         self.use_dropout = use_dropout
         self.dropout = nn.Dropout(dropout_rate) if use_dropout else nn.Identity()
 
-        # Block 1: 32x32 → 16x16
+        # Block 1
         self.conv1_1 = nn.Conv2d(3, 64, kernel_size=3, padding=1)
+        self.bn1_1 = nn.BatchNorm2d(64) if use_batchnorm else nn.Identity()
         self.conv1_2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.bn1_2 = nn.BatchNorm2d(64) if use_batchnorm else nn.Identity()
         self.pool1 = nn.MaxPool2d(2, 2)
 
-        # Block 2: 16x16 → 8x8
+        # Block 2
         self.conv2_1 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
+        self.bn2_1 = nn.BatchNorm2d(128) if use_batchnorm else nn.Identity()
         self.conv2_2 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
+        self.bn2_2 = nn.BatchNorm2d(128) if use_batchnorm else nn.Identity()
         self.pool2 = nn.MaxPool2d(2, 2)
 
-        # Block 3: 8x8 → 4x4
+        # Block 3
         self.conv3_1 = nn.Conv2d(128, 256, kernel_size=3, padding=1)
+        self.bn3_1 = nn.BatchNorm2d(256) if use_batchnorm else nn.Identity()
         self.conv3_2 = nn.Conv2d(256, 256, kernel_size=3, padding=1)
+        self.bn3_2 = nn.BatchNorm2d(256) if use_batchnorm else nn.Identity()
         self.pool3 = nn.MaxPool2d(2, 2)
 
         self.flatten = nn.Flatten()
@@ -90,18 +96,18 @@ class CIFAR10Model(nn.Module):
                 nn.init.zeros_(layer.bias)
 
     def forward(self, x):
-        x = self.relu(self.conv1_1(x))
-        x = self.relu(self.conv1_2(x))
+        x = self.relu(self.bn1_1(self.conv1_1(x)))
+        x = self.relu(self.bn1_2(self.conv1_2(x)))
         x = self.pool1(x)
         x = self.dropout(x)
 
-        x = self.relu(self.conv2_1(x))
-        x = self.relu(self.conv2_2(x))
+        x = self.relu(self.bn2_1(self.conv2_1(x)))
+        x = self.relu(self.bn2_2(self.conv2_2(x)))
         x = self.pool2(x)
         x = self.dropout(x)
 
-        x = self.relu(self.conv3_1(x))
-        x = self.relu(self.conv3_2(x))
+        x = self.relu(self.bn3_1(self.conv3_1(x)))
+        x = self.relu(self.bn3_2(self.conv3_2(x)))
         x = self.pool3(x)
         x = self.dropout(x)
 
@@ -175,8 +181,9 @@ def main():
     use_random_flip = True
     use_normalization = True
 
-    use_dropout = False
-    dropout_rate = 0
+    use_dropout = True
+    dropout_rate = 0.2
+    use_batchnorm = True
 
     train_loader, val_loader, test_loader = load_data(
         batch_size=64,
@@ -186,12 +193,15 @@ def main():
         use_normalization=use_normalization
     )
 
-    model = CIFAR10Model(use_dropout=use_dropout, dropout_rate=dropout_rate).to(device)
-
+    model = CIFAR10Model(
+        use_dropout=use_dropout,
+        dropout_rate=dropout_rate,
+        use_batchnorm=use_batchnorm
+    ).to(device)
 
     optimizer = optim.AdamW(
         model.parameters(),
-        lr=0.001,
+        lr=0.002,
         betas=(0.9, 0.999),
         eps=1e-7,
         weight_decay=0,
