@@ -7,6 +7,7 @@ from torchvision import transforms
 import numpy as np
 import random
 import matplotlib.pyplot as plt
+from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
 
 
 def set_seed(seed=42):
@@ -177,13 +178,19 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # augmentations
-    use_random_crop = True #this is the translation agumentation that they are talking about
-    use_random_flip = True
-    use_normalization = True
+    use_random_crop = False #this is the translation agumentation that they are talking about
+    use_random_flip = False
+    use_normalization = False
 
     use_dropout = True
-    dropout_rate = 0.2
-    use_batchnorm = True
+    dropout_rate = 0.3
+    use_batchnorm = False
+
+    use_scheduler = True #this gives the cosine with warmup
+    use_warm_restarts = True  #this is active if we want the cosine with restarts
+    warmup_epochs = 5
+    total_epochs = 100
+    cosine_anneal_epochs = total_epochs - warmup_epochs
 
     train_loader, val_loader, test_loader = load_data(
         batch_size=64,
@@ -201,19 +208,34 @@ def main():
 
     optimizer = optim.AdamW(
         model.parameters(),
-        lr=0.002,
+        lr=0.001,
         betas=(0.9, 0.999),
         eps=1e-7,
         weight_decay=0,
         amsgrad=False
     )
+
+    if use_scheduler:
+        if use_warm_restarts:
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                optimizer,
+                T_0=10,
+                T_mult=2,
+                eta_min=1e-5
+            )
+        else:
+            warmup_scheduler = LinearLR(optimizer, start_factor=0.1, total_iters=warmup_epochs)
+            cosine_scheduler = CosineAnnealingLR(optimizer, T_max=cosine_anneal_epochs, eta_min=1e-4)
+            scheduler = SequentialLR(optimizer, [warmup_scheduler, cosine_scheduler], milestones=[warmup_epochs])
+    else:
+        scheduler = None
+
     criterion = nn.CrossEntropyLoss()
 
-    epochs = 100
     train_acc, val_acc = [], []
     train_loss, val_loss = [], []
 
-    for epoch in range(1, epochs + 1):
+    for epoch in range(1, total_epochs + 1):
         tr_loss, tr_acc = train_one_epoch(model, train_loader, optimizer, criterion, device)
         va_loss, va_acc = evaluate(model, val_loader, criterion, device)
 
@@ -222,9 +244,16 @@ def main():
         val_loss.append(va_loss)
         val_acc.append(va_acc)
 
-        print(f'Epoch {epoch}/{epochs} — '
+        print(f'Epoch {epoch}/{total_epochs} — '
               f'Train Loss: {tr_loss:.4f} Acc: {tr_acc:.4f} — '
               f'Val Loss: {va_loss:.4f} Acc: {va_acc:.4f}')
+
+    if scheduler:
+        if use_warm_restarts:
+            scheduler.step(epoch - 1)
+        else:
+            scheduler.step()
+
 
     # Final test evaluation
     test_loss, test_acc = evaluate(model, test_loader, criterion, device)
