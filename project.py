@@ -54,38 +54,38 @@ def load_data(batch_size=64, val_size=1000, use_random_crop=False, use_random_fl
 
 
 class CIFAR10Model(nn.Module):
-    def __init__(self, use_dropout=True, dropout_rate=0.2, use_batchnorm=False):
+    def __init__(self, use_dropout=True, dropout_rate=0.2, use_batchnorm=False, use_stride_downsampling=False):
         super().__init__()
         self.relu = nn.ReLU()
         self.use_dropout = use_dropout
         self.dropout = nn.Dropout(dropout_rate) if use_dropout else nn.Identity()
+        self.use_stride_downsampling = use_stride_downsampling
 
         # Block 1
         self.conv1_1 = nn.Conv2d(3, 64, kernel_size=3, padding=1)
         self.bn1_1 = nn.BatchNorm2d(64) if use_batchnorm else nn.Identity()
-        self.conv1_2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.conv1_2 = nn.Conv2d(64, 64, kernel_size=3, padding=1, stride=2 if use_stride_downsampling else 1)
         self.bn1_2 = nn.BatchNorm2d(64) if use_batchnorm else nn.Identity()
-        self.pool1 = nn.MaxPool2d(2, 2)
+        self.pool1 = nn.Identity() if use_stride_downsampling else nn.MaxPool2d(2, 2)
 
         # Block 2
         self.conv2_1 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
         self.bn2_1 = nn.BatchNorm2d(128) if use_batchnorm else nn.Identity()
-        self.conv2_2 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
+        self.conv2_2 = nn.Conv2d(128, 128, kernel_size=3, padding=1, stride=2 if use_stride_downsampling else 1)
         self.bn2_2 = nn.BatchNorm2d(128) if use_batchnorm else nn.Identity()
-        self.pool2 = nn.MaxPool2d(2, 2)
+        self.pool2 = nn.Identity() if use_stride_downsampling else nn.MaxPool2d(2, 2)
 
         # Block 3
         self.conv3_1 = nn.Conv2d(128, 256, kernel_size=3, padding=1)
         self.bn3_1 = nn.BatchNorm2d(256) if use_batchnorm else nn.Identity()
-        self.conv3_2 = nn.Conv2d(256, 256, kernel_size=3, padding=1)
+        self.conv3_2 = nn.Conv2d(256, 256, kernel_size=3, padding=1, stride=2 if use_stride_downsampling else 1)
         self.bn3_2 = nn.BatchNorm2d(256) if use_batchnorm else nn.Identity()
-        self.pool3 = nn.MaxPool2d(2, 2)
+        self.pool3 = nn.Identity() if use_stride_downsampling else nn.MaxPool2d(2, 2)
 
         self.flatten = nn.Flatten()
         self.fc1 = nn.Linear(256 * 4 * 4, 128)
         self.fc2 = nn.Linear(128, 10)
 
-        # He initialization
         for layer in [
             self.conv1_1, self.conv1_2,
             self.conv2_1, self.conv2_2,
@@ -117,7 +117,6 @@ class CIFAR10Model(nn.Module):
         x = self.dropout(x)
         x = self.fc2(x)
         return x
-
 
 
 def train_one_epoch(model, dataloader, optimizer, criterion, device):
@@ -184,10 +183,12 @@ def main():
 
     use_dropout = True
     dropout_rate = 0.3
-    use_batchnorm = False
 
-    use_scheduler = True #this gives the cosine with warmup
-    use_warm_restarts = True  #this is active if we want the cosine with restarts
+    use_batchnorm = False
+    use_stride_downsampling = True  # set False to use traditional max pooling
+
+    use_scheduler = False #this gives the cosine with warmup
+    use_warm_restarts = False  #this is active if we want the cosine with restarts
     warmup_epochs = 5
     total_epochs = 100
     cosine_anneal_epochs = total_epochs - warmup_epochs
@@ -203,7 +204,8 @@ def main():
     model = CIFAR10Model(
         use_dropout=use_dropout,
         dropout_rate=dropout_rate,
-        use_batchnorm=use_batchnorm
+        use_batchnorm=use_batchnorm,
+        use_stride_downsampling=use_stride_downsampling
     ).to(device)
 
     optimizer = optim.AdamW(
