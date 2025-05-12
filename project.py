@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
 import torchvision
-from torchvision import transforms,datasets
+from torchvision import transforms, datasets
 import numpy as np
 import random
 import matplotlib.pyplot as plt
@@ -18,6 +18,39 @@ def set_seed(seed=42):
     torch.backends.cudnn.benchmark = False
 
 
+def load_data(batch_size=64, val_size=1000, use_random_crop=False, use_random_flip=False, use_normalization=False):
+    transform_list = []
+
+    if use_random_crop:
+        transform_list.append(transforms.RandomCrop(32, padding=4))
+    if use_random_flip:
+        transform_list.append(transforms.RandomHorizontalFlip())
+
+    transform_list.append(transforms.ToTensor())
+
+    if use_normalization:
+        transform_list.append(
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+        )
+
+    transform = transforms.Compose(transform_list)
+
+    base_transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+    ]) if use_normalization else transforms.ToTensor()
+
+    full_train = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
+    test_set = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=base_transform)
+
+    train_size = len(full_train) - val_size
+    train_set, val_set = random_split(full_train, [train_size, val_size], generator=torch.Generator().manual_seed(42))
+
+    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False)
+
+    return train_loader, val_loader, test_loader
 
 class CIFAR10Noisy(datasets.CIFAR10):
     """
@@ -97,44 +130,8 @@ def get_noisy_cifar10_loaders(root='./data', noise_rate=0.0, asym=False,
 
     return train_loader, val_loader, test_loader
 
-
-def load_data(batch_size=64, val_size=1000, use_random_crop=False, use_random_flip=False, use_normalization=False):
-    transform_list = []
-
-    if use_random_crop:
-        transform_list.append(transforms.RandomCrop(32, padding=4))
-    if use_random_flip:
-        transform_list.append(transforms.RandomHorizontalFlip())
-
-    transform_list.append(transforms.ToTensor())
-
-    if use_normalization:
-        transform_list.append(
-            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
-        )
-
-    transform = transforms.Compose(transform_list)
-
-    base_transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
-    ]) if use_normalization else transforms.ToTensor()
-
-    full_train = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
-    test_set = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=base_transform)
-
-    train_size = len(full_train) - val_size
-    train_set, val_set = random_split(full_train, [train_size, val_size], generator=torch.Generator().manual_seed(42))
-
-    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False)
-    test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False)
-
-    return train_loader, val_loader, test_loader
-
-
 class CIFAR10Model(nn.Module):
-    def __init__(self, use_dropout=True, dropout_rate=0.2, use_batchnorm=False, use_stride_downsampling=False):
+    def __init__(self, use_dropout=True, dropout_rate=0.2, use_batchnorm=False, use_stride_downsampling=False, use_gap=False):
         super().__init__()
         self.relu = nn.ReLU()
         self.use_dropout = use_dropout
@@ -162,16 +159,27 @@ class CIFAR10Model(nn.Module):
         self.bn3_2 = nn.BatchNorm2d(256) if use_batchnorm else nn.Identity()
         self.pool3 = nn.Identity() if use_stride_downsampling else nn.MaxPool2d(2, 2)
 
-        self.flatten = nn.Flatten()
-        self.fc1 = nn.Linear(256 * 4 * 4, 128)
-        self.fc2 = nn.Linear(128, 10)
+        self.use_gap = use_gap
+        if self.use_gap:
+            self.global_avg_pool = nn.AdaptiveAvgPool2d((1, 1))
+            self.classifier = nn.Linear(256, 10)
+        else:
+            self.flatten = nn.Flatten()
+            self.fc1 = nn.Linear(256 * 4 * 4, 128)
+            self.fc2 = nn.Linear(128, 10)
 
-        for layer in [
+        layers_to_init = [
             self.conv1_1, self.conv1_2,
             self.conv2_1, self.conv2_2,
             self.conv3_1, self.conv3_2,
-            self.fc1, self.fc2
-        ]:
+        ]
+
+        if self.use_gap:
+            layers_to_init.append(self.classifier)
+        else:
+            layers_to_init.extend([self.fc1, self.fc2])
+
+        for layer in layers_to_init:
             if isinstance(layer, nn.Conv2d) or isinstance(layer, nn.Linear):
                 nn.init.kaiming_uniform_(layer.weight, nonlinearity='relu' if layer != self.fc2 else 'linear')
                 nn.init.zeros_(layer.bias)
@@ -192,12 +200,29 @@ class CIFAR10Model(nn.Module):
         x = self.pool3(x)
         x = self.dropout(x)
 
-        x = self.flatten(x)
-        x = self.relu(self.fc1(x))
-        x = self.dropout(x)
-        x = self.fc2(x)
+        if self.use_gap:
+            x = self.global_avg_pool(x)
+            x = torch.flatten(x, 1)
+            x = self.classifier(x)
+        else:
+            x = self.flatten(x)
+            x = self.relu(self.fc1(x))
+            x = self.dropout(x)
+            x = self.fc2(x)
         return x
 
+class LabelSmoothingCrossEntropy(nn.Module):
+    def __init__(self, smoothing=0.1):
+        super().__init__()
+        self.smoothing = smoothing
+        self.confidence = 1.0 - smoothing
+
+    def forward(self, x, target):
+        log_probs = nn.functional.log_softmax(x, dim=-1)
+        true_dist = torch.zeros_like(log_probs)
+        true_dist.fill_(self.smoothing / (x.size(1) - 1))
+        true_dist.scatter_(1, target.unsqueeze(1), self.confidence)
+        return torch.mean(torch.sum(-true_dist * log_probs, dim=-1))
 
 def train_one_epoch(model, dataloader, optimizer, criterion, device):
     model.train()
@@ -260,6 +285,8 @@ def main():
     use_random_crop = False #this is the translation agumentation that they are talking about
     use_random_flip = False
     use_normalization = False
+    use_label_smoothing = False
+    use_gap = False
 
     use_dropout = True
     dropout_rate = 0.3
@@ -270,7 +297,7 @@ def main():
     use_scheduler = False #this gives the cosine with warmup
     use_warm_restarts = False  #this is active if we want the cosine with restarts
     warmup_epochs = 5
-    total_epochs = 15
+    total_epochs = 100
     cosine_anneal_epochs = total_epochs - warmup_epochs
 
     noisy_labels = False
@@ -297,7 +324,8 @@ def main():
         use_dropout=use_dropout,
         dropout_rate=dropout_rate,
         use_batchnorm=use_batchnorm,
-        use_stride_downsampling=use_stride_downsampling
+        use_stride_downsampling=use_stride_downsampling,
+        use_gap=use_gap
     ).to(device)
 
     optimizer = optim.AdamW(
@@ -324,7 +352,10 @@ def main():
     else:
         scheduler = None
 
-    criterion = nn.CrossEntropyLoss()
+    if use_label_smoothing:
+        criterion = LabelSmoothingCrossEntropy(smoothing=0.1)
+    else:
+        criterion = nn.CrossEntropyLoss()
 
     train_acc, val_acc = [], []
     train_loss, val_loss = [], []
