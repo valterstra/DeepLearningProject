@@ -224,6 +224,28 @@ class LabelSmoothingCrossEntropy(nn.Module):
         true_dist.scatter_(1, target.unsqueeze(1), self.confidence)
         return torch.mean(torch.sum(-true_dist * log_probs, dim=-1))
 
+
+class SymmetricCrossEntropy(nn.Module):
+    def __init__(self, A=-4, alpha=0.1, beta=1.0):
+        super().__init__()
+        self.A = A
+        self.alpha = alpha
+        self.beta = beta
+
+    def forward(self, x, target):
+        ce = nn.functional.cross_entropy(x, target, reduction="none")
+
+        pred_softmax = nn.functional.softmax(x, dim=1)
+        target_onehot = nn.functional.one_hot(x, num_classes=x.size(1)).float()
+        target_log = torch.log(target_onehot)
+        target_log = torch.nan_to_num(target_log, nan=self.A, neginf=self.A)
+
+        rce = -torch.sum(pred_softmax * target_log, dim=1)
+        loss = self.alpha * ce + self.beta * rce
+
+        return torch.mean(loss)
+
+
 def train_one_epoch(model, dataloader, optimizer, criterion, device):
     model.train()
     total_loss, correct, total = 0.0, 0, 0
@@ -286,6 +308,7 @@ def main():
     use_random_flip = False
     use_normalization = False
     use_label_smoothing = False
+    use_SymmetricCrossEntropy = True
     use_gap = False
 
     use_dropout = True
@@ -354,6 +377,8 @@ def main():
 
     if use_label_smoothing:
         criterion = LabelSmoothingCrossEntropy(smoothing=0.1)
+    elif use_SymmetricCrossEntropy:
+        criterion = SymmetricCrossEntropy()
     else:
         criterion = nn.CrossEntropyLoss()
 
