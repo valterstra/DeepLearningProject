@@ -236,7 +236,7 @@ class SymmetricCrossEntropy(nn.Module):
         ce = nn.functional.cross_entropy(x, target, reduction="none")
 
         pred_softmax = nn.functional.softmax(x, dim=1)
-        target_onehot = nn.functional.one_hot(x, num_classes=x.size(1)).float()
+        target_onehot = nn.functional.one_hot(target, num_classes=x.size(1)).float()
         target_log = torch.log(target_onehot)
         target_log = torch.nan_to_num(target_log, nan=self.A, neginf=self.A)
 
