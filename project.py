@@ -224,6 +224,28 @@ class LabelSmoothingCrossEntropy(nn.Module):
         true_dist.scatter_(1, target.unsqueeze(1), self.confidence)
         return torch.mean(torch.sum(-true_dist * log_probs, dim=-1))
 
+
+class SymmetricCrossEntropy(nn.Module):
+    def __init__(self, A=-4, alpha=0.1, beta=1.0):
+        super().__init__()
+        self.A = A
+        self.alpha = alpha
+        self.beta = beta
+
+    def forward(self, x, target):
+        ce = nn.functional.cross_entropy(x, target, reduction="none")
+
+        pred_softmax = nn.functional.softmax(x, dim=1)
+        target_onehot = nn.functional.one_hot(target, num_classes=x.size(1)).float()
+        target_log = torch.log(target_onehot)
+        target_log = torch.nan_to_num(target_log, nan=self.A, neginf=self.A)
+
+        rce = -torch.sum(pred_softmax * target_log, dim=1)
+        loss = self.alpha * ce + self.beta * rce
+
+        return torch.mean(loss)
+
+
 def train_one_epoch(model, dataloader, optimizer, criterion, device):
     model.train()
     total_loss, correct, total = 0.0, 0, 0
@@ -242,9 +264,13 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device):
     return total_loss / total, correct / total
 
 
-def evaluate(model, dataloader, criterion, device):
+def evaluate(model, dataloader, criterion, device, num_classes=10):
     model.eval()
     total_loss, correct, total = 0.0, 0, 0
+
+    class_correct = [0 for _ in range(num_classes)]
+    class_total = [0 for _ in range(num_classes)]
+
     with torch.no_grad():
         for X, y in dataloader:
             X, y = X.to(device), y.to(device)
@@ -254,7 +280,16 @@ def evaluate(model, dataloader, criterion, device):
             total += y.size(0)
             correct += (preds.argmax(1) == y).sum().item()
 
-    return total_loss / total, correct / total
+            for i in range(len(y)):
+                label = y[i].item()
+                pred = preds[i].argmax().item()
+                class_total[label] += 1
+                if pred == label:
+                    class_correct[label] += 1
+
+    class_accuracy = [c / t if t > 0 else 0.0 for c, t in zip(class_correct, class_total)]
+    return total_loss / total, correct / total, class_accuracy
+
 
 
 def plot_diagnostics(train_acc, val_acc, train_loss, val_loss):
@@ -277,6 +312,50 @@ def plot_diagnostics(train_acc, val_acc, train_loss, val_loss):
     plt.show()
 
 
+def plot_per_class_accuracy(class_accuracies_dict, num_classes=10):
+    class_indices = list(range(num_classes))
+    plt.figure(figsize=(7, 5))
+
+    for label, accuracies in class_accuracies_dict.items():
+        plt.plot(class_indices, accuracies, marker='o', label=label)
+
+    plt.xlabel('Class')
+    plt.ylabel('Test accuracy')
+    plt.title('Per-class test accuracy across epochs')
+    plt.ylim(0.0, 1.05)
+    plt.xticks(class_indices)
+    plt.grid(True, linestyle='--', alpha=0.5)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_classwise_accuracy_over_epochs(per_class_accuracy_log):
+    epochs = sorted(per_class_accuracy_log.keys())
+    num_classes = len(per_class_accuracy_log[epochs[0]])
+    acc_matrix = np.array([per_class_accuracy_log[ep] for ep in epochs])  # shape: (len(epochs), num_classes)
+
+    plt.figure(figsize=(8, 6))
+    for c in range(num_classes):
+        plt.plot(epochs, acc_matrix[:, c], linestyle='--', label=f"Class {c}", alpha=0.6)
+
+    mean_acc = acc_matrix.mean(axis=1)
+    std_acc = acc_matrix.std(axis=1)
+    plt.plot(epochs, mean_acc, color='brown', linewidth=2.5, label='Overall')
+    plt.fill_between(epochs, mean_acc - std_acc, mean_acc + std_acc, color='purple', alpha=0.2)
+
+    plt.xlabel('Number of epochs')
+    plt.ylabel('Class-wise test accuracy')
+    plt.title('Class-wise accuracy vs. Epochs')
+    plt.ylim(0.0, 1.05)
+    plt.grid(True, linestyle='--', alpha=0.4)
+    plt.legend(loc='lower right', ncol=2)
+    plt.tight_layout()
+    plt.show()
+
+
+
+
 def main():
     set_seed()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -286,6 +365,7 @@ def main():
     use_random_flip = False
     use_normalization = False
     use_label_smoothing = False
+    use_SymmetricCrossEntropy = False
     use_gap = False
 
     use_dropout = True
@@ -297,7 +377,7 @@ def main():
     use_scheduler = False #this gives the cosine with warmup
     use_warm_restarts = False  #this is active if we want the cosine with restarts
     warmup_epochs = 5
-    total_epochs = 100
+    total_epochs = 30
     cosine_anneal_epochs = total_epochs - warmup_epochs
 
     noisy_labels = False
@@ -354,34 +434,57 @@ def main():
 
     if use_label_smoothing:
         criterion = LabelSmoothingCrossEntropy(smoothing=0.1)
+    elif use_SymmetricCrossEntropy:
+        criterion = SymmetricCrossEntropy()
     else:
         criterion = nn.CrossEntropyLoss()
 
     train_acc, val_acc = [], []
     train_loss, val_loss = [], []
 
+    epoch_checkpoints = [10, 20, 29]
+    class_acc_over_epochs = {}
+    classwise_accuracy_log = {}
+
+    plot_class_wise_acc = True
+    interval_of_plot = 5
+
+
     for epoch in range(1, total_epochs + 1):
         tr_loss, tr_acc = train_one_epoch(model, train_loader, optimizer, criterion, device)
-        va_loss, va_acc = evaluate(model, val_loader, criterion, device)
+        va_loss, va_acc, va_class_acc = evaluate(model, val_loader, criterion, device)
+
+        if plot_class_wise_acc:
+          if epoch % interval_of_plot == 0:
+            classwise_accuracy_log[epoch] = va_class_acc
+
 
         train_loss.append(tr_loss)
         train_acc.append(tr_acc)
         val_loss.append(va_loss)
         val_acc.append(va_acc)
 
+        if epoch in epoch_checkpoints:
+            class_acc_over_epochs[f"Epoch {epoch}"] = va_class_acc
+
         print(f'Epoch {epoch}/{total_epochs} — '
               f'Train Loss: {tr_loss:.4f} Acc: {tr_acc:.4f} — '
               f'Val Loss: {va_loss:.4f} Acc: {va_acc:.4f}')
 
-    if scheduler:
-        if use_warm_restarts:
-            scheduler.step(epoch - 1)
-        else:
-            scheduler.step()
+        if scheduler:
+            if use_warm_restarts:
+                scheduler.step(epoch - 1)
+            else:
+                scheduler.step()
+
+    plot_per_class_accuracy(class_acc_over_epochs)
+
+    if plot_class_wise_acc:
+      plot_classwise_accuracy_over_epochs(classwise_accuracy_log)
 
 
     # Final test evaluation
-    test_loss, test_acc = evaluate(model, test_loader, criterion, device)
+    test_loss, test_acc, _ = evaluate(model, test_loader, criterion, device)
     print(f'> Final test accuracy: {test_acc * 100:.2f}%')
 
     plot_diagnostics(train_acc, val_acc, train_loss, val_loss)
