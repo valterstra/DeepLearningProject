@@ -224,7 +224,7 @@ class LabelSmoothingCrossEntropy(nn.Module):
 
 
 class SymmetricCrossEntropy(nn.Module):
-    def __init__(self, A=-4, alpha=0.1, beta=1.0):
+    def __init__(self, A=-6, alpha=0.1, beta=1.0):
         super().__init__()
         self.A = A
         self.alpha = alpha
@@ -372,7 +372,10 @@ def main():
     use_normalization = True
 
     use_label_smoothing = False
-    use_SymmetricCrossEntropy = False
+    use_SymmetricCrossEntropy = True
+    sce_alpha = 0.1
+    sce_beta = 1.0
+    sce_A = -6
     use_gap = False
 
     use_dropout = True
@@ -384,7 +387,7 @@ def main():
     use_scheduler = False #this gives the cosine with warmup
     use_warm_restarts = False  #this is active if we want the cosine with restarts
     warmup_epochs = 5
-    total_epochs = 6
+    total_epochs = 100
     cosine_anneal_epochs = total_epochs - warmup_epochs
 
     noisy_labels = True
@@ -442,9 +445,10 @@ def main():
     if use_label_smoothing:
         criterion = LabelSmoothingCrossEntropy(smoothing=0.1)
     elif use_SymmetricCrossEntropy:
-        criterion = SymmetricCrossEntropy()
+        criterion = SymmetricCrossEntropy(alpha=sce_alpha, beta=sce_beta, A=sce_A)
     else:
         criterion = nn.CrossEntropyLoss()
+
 
     train_acc, val_acc = [], []
     train_loss, val_loss = [], []
