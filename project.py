@@ -52,10 +52,8 @@ def load_data(batch_size=64, val_size=1000, use_random_crop=False, use_random_fl
 
     return train_loader, val_loader, test_loader
 
+
 class CIFAR10Noisy(datasets.CIFAR10):
-    """
-    CIFAR-10 dataset with optional symmetric or asymmetric label noise.
-    """
     def __init__(self, root, train=True, transform=None, download=False,
                  noise_rate=0.0, asym=False, seed=0):
         super().__init__(root, train=train, transform=transform, download=download)
@@ -264,10 +262,23 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device):
     return total_loss / total, correct / total
 
 
-def evaluate(model, dataloader, criterion, device, num_classes=10):
+def evaluate_val(model, dataloader, criterion, device):
     model.eval()
     total_loss, correct, total = 0.0, 0, 0
+    with torch.no_grad():
+        for X, y in dataloader:
+            X, y = X.to(device), y.to(device)
+            preds = model(X)
+            loss = criterion(preds, y)
+            total_loss += loss.item() * X.size(0)
+            correct += (preds.argmax(1) == y).sum().item()
+            total += y.size(0)
+    return total_loss / total, correct / total
 
+
+
+def evaluate_test_per_class(model, dataloader, criterion, device, num_classes=10):
+    model.eval()
     class_correct = [0 for _ in range(num_classes)]
     class_total = [0 for _ in range(num_classes)]
 
@@ -275,11 +286,6 @@ def evaluate(model, dataloader, criterion, device, num_classes=10):
         for X, y in dataloader:
             X, y = X.to(device), y.to(device)
             preds = model(X)
-            loss = criterion(preds, y)
-            total_loss += loss.item() * X.size(0)
-            total += y.size(0)
-            correct += (preds.argmax(1) == y).sum().item()
-
             for i in range(len(y)):
                 label = y[i].item()
                 pred = preds[i].argmax().item()
@@ -288,7 +294,7 @@ def evaluate(model, dataloader, criterion, device, num_classes=10):
                     class_correct[label] += 1
 
     class_accuracy = [c / t if t > 0 else 0.0 for c, t in zip(class_correct, class_total)]
-    return total_loss / total, correct / total, class_accuracy
+    return class_accuracy
 
 
 
@@ -361,9 +367,10 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # augmentations
-    use_random_crop = False #this is the translation agumentation that they are talking about
-    use_random_flip = False
-    use_normalization = False
+    use_random_crop = True #this is the translation agumentation that they are talking about
+    use_random_flip = True
+    use_normalization = True
+
     use_label_smoothing = False
     use_SymmetricCrossEntropy = False
     use_gap = False
@@ -371,17 +378,17 @@ def main():
     use_dropout = True
     dropout_rate = 0.3
 
-    use_batchnorm = False
+    use_batchnorm = True
     use_stride_downsampling = False  # set False to use traditional max pooling
 
     use_scheduler = False #this gives the cosine with warmup
     use_warm_restarts = False  #this is active if we want the cosine with restarts
     warmup_epochs = 5
-    total_epochs = 30
+    total_epochs = 6
     cosine_anneal_epochs = total_epochs - warmup_epochs
 
-    noisy_labels = False
-    noise_rate = 0.5
+    noisy_labels = True
+    noise_rate = 0.4
     asym = False
 
     if noisy_labels:
@@ -442,7 +449,7 @@ def main():
     train_acc, val_acc = [], []
     train_loss, val_loss = [], []
 
-    epoch_checkpoints = [10, 20, 29]
+    epoch_checkpoints = [10, 50, 100]
     class_acc_over_epochs = {}
     classwise_accuracy_log = {}
 
@@ -452,20 +459,20 @@ def main():
 
     for epoch in range(1, total_epochs + 1):
         tr_loss, tr_acc = train_one_epoch(model, train_loader, optimizer, criterion, device)
-        va_loss, va_acc, va_class_acc = evaluate(model, val_loader, criterion, device)
+        va_loss, va_acc = evaluate_val(model, val_loader, criterion, device)
 
-        if plot_class_wise_acc:
-          if epoch % interval_of_plot == 0:
-            classwise_accuracy_log[epoch] = va_class_acc
+        if plot_class_wise_acc and epoch % interval_of_plot == 0:
+            test_class_acc = evaluate_test_per_class(model, test_loader, criterion, device)
+            classwise_accuracy_log[epoch] = test_class_acc
 
+        if epoch in epoch_checkpoints:
+            test_class_acc = evaluate_test_per_class(model, test_loader, criterion, device)
+            class_acc_over_epochs[f"Epoch {epoch}"] = test_class_acc
 
         train_loss.append(tr_loss)
         train_acc.append(tr_acc)
         val_loss.append(va_loss)
         val_acc.append(va_acc)
-
-        if epoch in epoch_checkpoints:
-            class_acc_over_epochs[f"Epoch {epoch}"] = va_class_acc
 
         print(f'Epoch {epoch}/{total_epochs} — '
               f'Train Loss: {tr_loss:.4f} Acc: {tr_acc:.4f} — '
@@ -480,14 +487,12 @@ def main():
     plot_per_class_accuracy(class_acc_over_epochs)
 
     if plot_class_wise_acc:
-      plot_classwise_accuracy_over_epochs(classwise_accuracy_log)
+        plot_classwise_accuracy_over_epochs(classwise_accuracy_log)
 
-
-    # Final test evaluation
-    test_loss, test_acc, _ = evaluate(model, test_loader, criterion, device)
+    test_loss, test_acc = evaluate_val(model, test_loader, criterion, device)
     print(f'> Final test accuracy: {test_acc * 100:.2f}%')
 
-    plot_diagnostics(train_acc, val_acc, train_loss, val_loss)
+    #plot_diagnostics(train_acc, val_acc, train_loss, val_loss)
 
 
 if __name__ == '__main__':
