@@ -8,6 +8,8 @@ import numpy as np
 import random
 import matplotlib.pyplot as plt
 from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
+import torch.nn.functional as F
+
 
 
 def set_seed(seed=42):
@@ -127,6 +129,38 @@ def get_noisy_cifar10_loaders(root='./data', noise_rate=0.0, asym=False,
                              num_workers=num_workers, pin_memory=True)
 
     return train_loader, val_loader, test_loader
+
+
+class VGG1Block(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.relu = nn.ReLU()
+
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=2, stride=2)
+        self.conv2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.pool = nn.MaxPool2d(2, 2)
+
+        self.flatten = nn.Flatten()
+        self.fc1 = nn.Linear(64 * 8 * 8, 128)
+        self.fc2 = nn.Linear(128, 10)
+
+        for layer in [self.conv1, self.conv2, self.conv3, self.fc1, self.fc2]:
+            if isinstance(layer, nn.Conv2d) or isinstance(layer, nn.Linear):
+                nn.init.kaiming_uniform_(layer.weight, nonlinearity='relu')
+                nn.init.zeros_(layer.bias)
+
+    def forward(self, x):
+        x = self.relu(self.conv1(x))
+        x = self.relu(self.conv2(x))
+        x = self.relu(self.conv3(x))
+        x = self.pool(x)
+        x = self.flatten(x)
+        x = self.relu(self.fc1(x))
+        x = self.fc2(x)
+        return x
+
+
 
 class CIFAR10Model(nn.Module):
     def __init__(self, use_dropout=True, dropout_rate=0.2, use_batchnorm=False, use_stride_downsampling=False, use_gap=False):
@@ -339,7 +373,7 @@ def plot_per_class_accuracy(class_accuracies_dict, num_classes=10):
 def plot_classwise_accuracy_over_epochs(per_class_accuracy_log):
     epochs = sorted(per_class_accuracy_log.keys())
     num_classes = len(per_class_accuracy_log[epochs[0]])
-    acc_matrix = np.array([per_class_accuracy_log[ep] for ep in epochs])  # shape: (len(epochs), num_classes)
+    acc_matrix = np.array([per_class_accuracy_log[ep] for ep in epochs])
 
     plt.figure(figsize=(8, 6))
     for c in range(num_classes):
@@ -360,11 +394,175 @@ def plot_classwise_accuracy_over_epochs(per_class_accuracy_log):
     plt.show()
 
 
+def run_experiment_for_alphas():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    A_values = [-2, -4, -6, -8]
+    interval = 5
+
+    use_random_crop = True
+    use_random_flip = True
+    use_normalization = True
+    use_label_smoothing = False
+    use_SymmetricCrossEntropy = True
+    sce_alpha = 1.0
+    sce_beta = 1.0
+    use_gap = False
+
+    use_dropout = True
+    dropout_rate = 0.3
+    use_batchnorm = True
+    use_stride_downsampling = False
+
+    total_epochs = 100
+    noisy_labels = True
+    noise_rate = 0.4
+    asym = False
+
+    train_loader, val_loader, test_loader = get_noisy_cifar10_loaders(
+        root='./data', noise_rate=noise_rate, asym=asym,
+        batch_size=64, val_size=1000,
+        use_random_crop=use_random_crop, use_random_flip=use_random_flip,
+        use_normalization=use_normalization, num_workers=4, seed=42
+    )
+
+    accuracy_logs = {}
+
+    for A in A_values:
+        model = CIFAR10Model(
+            use_dropout=use_dropout,
+            dropout_rate=dropout_rate,
+            use_batchnorm=use_batchnorm,
+            use_stride_downsampling=use_stride_downsampling,
+            use_gap=use_gap
+        ).to(device)
+
+        criterion = SymmetricCrossEntropy(alpha=sce_alpha, beta=sce_beta, A=A)
+        optimizer = optim.AdamW(
+            model.parameters(),
+            lr=0.001,
+            betas=(0.9, 0.999),
+            eps=1e-7,
+            weight_decay=0,
+            amsgrad=False
+        )
+
+        epoch_acc_log = {}
+
+        for epoch in range(1, total_epochs + 1):
+            tr_loss, tr_acc = train_one_epoch(model, train_loader, optimizer, criterion, device)
+            if epoch % interval == 0:
+                test_loss, test_acc = evaluate_val(model, test_loader, criterion, device)
+                epoch_acc_log[epoch] = test_acc
+        accuracy_logs[A] = epoch_acc_log
+
+    return accuracy_logs
+
+
+def run_ablation_study_sce_terms():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    ablation_settings = {
+        "SCE (α=0.1, β=1.0)": (0.1, 1.0),
+        "No RCE (β=0)": (0.1, 0.0),
+        "No CE (α=0)": (0.0, 1.0),
+        "Upscaled CE (α=2.0)": (2.0, 1.0),
+        "Upscaled RCE (β=5.0)": (0.1, 5.0)
+    }
+
+    total_epochs = 100
+    interval = 5
+    noise_rate = 0.4
+    asym = False
+    batch_size = 64
+    val_size = 1000
+    seed = 42
+
+    accuracy_logs = {}
+
+    for label, (alpha, beta) in ablation_settings.items():
+        print(f"\nRunning: {label}")
+        train_loader, val_loader, test_loader = get_noisy_cifar10_loaders(
+            root='./data', noise_rate=noise_rate, asym=asym,
+            batch_size=batch_size, val_size=val_size,
+            use_random_crop=True, use_random_flip=True,
+            use_normalization=True, num_workers=4, seed=seed
+        )
+
+        model = CIFAR10Model(
+            use_dropout=True,
+            dropout_rate=0.3,
+            use_batchnorm=True,
+            use_stride_downsampling=False,
+            use_gap=False
+        ).to(device)
+
+        criterion = SymmetricCrossEntropy(alpha=alpha, beta=beta, A=-6)
+
+        optimizer = optim.AdamW(
+          model.parameters(),
+          lr=0.001,
+          betas=(0.9, 0.999),
+          eps=1e-7,
+          weight_decay=0,
+          amsgrad=False
+        )
+
+        epoch_acc_log = {}
+
+        for epoch in range(1, total_epochs + 1):
+            train_one_epoch(model, train_loader, optimizer, criterion, device)
+            if epoch % interval == 0:
+                _, test_acc = evaluate_val(model, test_loader, criterion, device)
+                epoch_acc_log[epoch] = test_acc
+                print(f"  Epoch {epoch}: Test Acc = {test_acc:.4f}")
+
+        accuracy_logs[label] = epoch_acc_log
+
+    plot_ablation_sce_terms(accuracy_logs)
+
+
+def plot_ablation_sce_terms(accuracy_logs):
+    plt.figure(figsize=(9, 6))
+
+    for label, acc_log in accuracy_logs.items():
+        epochs = list(acc_log.keys())
+        accs = list(acc_log.values())
+        plt.plot(epochs, accs, marker='o', label=label)
+
+    plt.xlabel("Epoch")
+    plt.ylabel("Test Accuracy")
+    plt.title("Ablation Study of SCE Components")
+    plt.ylim(0.0, 1.05)
+    plt.grid(True, linestyle='--', alpha=0.4)
+    plt.legend(title="Loss Variant", fontsize=10)
+    plt.tight_layout()
+    plt.show()
+
+
+
+def plot_sce_alpha_comparison(accuracy_logs):
+    plt.figure(figsize=(8, 6))
+    for alpha, acc_log in accuracy_logs.items():
+        epochs = list(acc_log.keys())
+        accs = list(acc_log.values())
+        plt.plot(epochs, accs, marker='o', label=f"A={alpha}")
+
+    plt.xlabel("Epoch")
+    plt.ylabel("Test Accuracy")
+    plt.title("SCE: Test Accuracy vs Epochs for Different A Values")
+    plt.ylim(0.0, 1.05)
+    plt.grid(True, linestyle='--', alpha=0.5)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
 
 
 def main():
     set_seed()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    use_baseline_cnn = False
 
     # augmentations
     use_random_crop = True #this is the translation agumentation that they are talking about
@@ -372,10 +570,10 @@ def main():
     use_normalization = True
 
     use_label_smoothing = False
-    use_SymmetricCrossEntropy = True
+    use_SymmetricCrossEntropy = False
     sce_alpha = 0.1
     sce_beta = 1.0
-    sce_A = -6
+    sce_A = -4
     use_gap = False
 
     use_dropout = True
@@ -384,15 +582,20 @@ def main():
     use_batchnorm = True
     use_stride_downsampling = False  # set False to use traditional max pooling
 
-    use_scheduler = False #this gives the cosine with warmup
+    use_scheduler = True #this gives the cosine with warmup
     use_warm_restarts = False  #this is active if we want the cosine with restarts
     warmup_epochs = 5
     total_epochs = 100
     cosine_anneal_epochs = total_epochs - warmup_epochs
 
-    noisy_labels = True
-    noise_rate = 0.4
+    noisy_labels = False
+    noise_rate = 0.40
     asym = False
+
+    #accuracy_logs = run_experiment_for_alphas()
+    #plot_sce_alpha_comparison(accuracy_logs)
+    #run_ablation_study_sce_terms()
+
 
     if noisy_labels:
         train_loader, val_loader, test_loader = get_noisy_cifar10_loaders(
@@ -410,20 +613,24 @@ def main():
             use_normalization=use_normalization
         )
 
-    model = CIFAR10Model(
-        use_dropout=use_dropout,
-        dropout_rate=dropout_rate,
-        use_batchnorm=use_batchnorm,
-        use_stride_downsampling=use_stride_downsampling,
-        use_gap=use_gap
-    ).to(device)
+    if use_baseline_cnn:
+        model = VGG1Block().to(device)
+    else:
+        model = CIFAR10Model(
+            use_dropout=use_dropout,
+            dropout_rate=dropout_rate,
+            use_batchnorm=use_batchnorm,
+            use_stride_downsampling=use_stride_downsampling,
+            use_gap=use_gap
+        ).to(device)
+
 
     optimizer = optim.AdamW(
         model.parameters(),
         lr=0.001,
         betas=(0.9, 0.999),
         eps=1e-7,
-        weight_decay=0,
+        weight_decay=0.01,
         amsgrad=False
     )
 
@@ -457,7 +664,7 @@ def main():
     class_acc_over_epochs = {}
     classwise_accuracy_log = {}
 
-    plot_class_wise_acc = True
+    plot_class_wise_acc = False
     interval_of_plot = 5
 
 
@@ -469,9 +676,9 @@ def main():
             test_class_acc = evaluate_test_per_class(model, test_loader, criterion, device)
             classwise_accuracy_log[epoch] = test_class_acc
 
-        if epoch in epoch_checkpoints:
-            test_class_acc = evaluate_test_per_class(model, test_loader, criterion, device)
-            class_acc_over_epochs[f"Epoch {epoch}"] = test_class_acc
+            if epoch in epoch_checkpoints:
+                test_class_acc = evaluate_test_per_class(model, test_loader, criterion, device)
+                class_acc_over_epochs[f"Epoch {epoch}"] = test_class_acc
 
         train_loss.append(tr_loss)
         train_acc.append(tr_acc)
@@ -488,7 +695,8 @@ def main():
             else:
                 scheduler.step()
 
-    plot_per_class_accuracy(class_acc_over_epochs)
+    if plot_class_wise_acc:
+      plot_per_class_accuracy(class_acc_over_epochs)
 
     if plot_class_wise_acc:
         plot_classwise_accuracy_over_epochs(classwise_accuracy_log)
@@ -496,7 +704,7 @@ def main():
     test_loss, test_acc = evaluate_val(model, test_loader, criterion, device)
     print(f'> Final test accuracy: {test_acc * 100:.2f}%')
 
-    #plot_diagnostics(train_acc, val_acc, train_loss, val_loss)
+    plot_diagnostics(train_acc, val_acc, train_loss, val_loss)
 
 
 if __name__ == '__main__':
